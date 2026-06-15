@@ -73,7 +73,7 @@ steps:
 
   - label: "${TPU_VERSION:-tpu6e} ${MODEL_IMPL_TYPE:-vllm} E2E MMLU for Llama-3.1-8B continue_decode"
     key: "${BK_KEY}_rl_integration_continue_decode_mmlu"
-    depends_on: "${BK_KEY}_build_docker"
+    depends_on: "${TPU_VERSION:-tpu6e}_build_docker"
     soft_fail: true
     env:
       USE_PREBUILT_IMAGE: "1"
