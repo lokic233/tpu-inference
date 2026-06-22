@@ -536,13 +536,14 @@ class RaggedPagedAttentionKernelTest(jtu.JaxTestCase):
     @parameterized.product(
         dtype=[jnp.float32, jnp.bfloat16],
         seq_lens=[
-            [(1, 1)],  # extremely compact context
-            [(1, 1), (1, 1)],
-            # Uneven context shorter than page_size=16.
+            [(1, 1)],  
             [(1, 15)],
-            [(2, 5)],
-            # At, immediately above, and around one- and two-page boundaries.
-            [(1, 16), (1, 17), (1, 31), (1, 32), (1, 33)],
+            [(1, 16)],
+            [(1, 17)],
+            [(8, 31)],
+            [(8, 32)],
+            [(8, 33)],
+            [(1, 1), (1, 16), (1, 17)],
         ],
     )
     def test_ragged_paged_attention_boundary_seq_lens(self, dtype, seq_lens):
