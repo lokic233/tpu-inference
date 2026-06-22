@@ -340,7 +340,7 @@ class RaggedPagedAttentionKernelTest(jtu.JaxTestCase):
         )
 
     @parameterized.product(dtype=[jnp.float32, jnp.bfloat16], )
-    def test_ragged_paged_attention_prefill_only(self, dtype):
+    def test_ragged_paged_attention_fixed_chunked_prefill_only(self, dtype):
         chunk_prefill_size = 16
         seq_lens = [
             (chunk_prefill_size, 18),
@@ -376,6 +376,32 @@ class RaggedPagedAttentionKernelTest(jtu.JaxTestCase):
             num_pages,
             distribution=distribution,
             chunk_prefill_size=chunk_prefill_size,
+        )
+
+    @parameterized.product(
+        dtype=[jnp.float32, jnp.bfloat16],
+        seq_len=[16, 32, 128],
+    )
+    def test_ragged_paged_attention_pure_prefill(self, dtype, seq_len):
+        # The fixed-prefill bucket has one static q_len per invocation. Test
+        # q_len == kv_len separately for several page-boundary-relevant sizes.
+        seq_lens = [(seq_len, seq_len)]
+        distribution = [0, len(seq_lens), len(seq_lens)]
+        num_heads = (32, 8)
+        head_dim = 128
+        page_size = 16
+        num_pages = 1000
+
+        self._test_ragged_paged_attention(
+            seq_lens,
+            num_heads,
+            head_dim,
+            page_size,
+            dtype,
+            dtype,
+            num_pages,
+            distribution=distribution,
+            chunk_prefill_size=seq_len,
         )
 
     @parameterized.product(dtype=[jnp.float32, jnp.bfloat16], )
@@ -512,8 +538,11 @@ class RaggedPagedAttentionKernelTest(jtu.JaxTestCase):
         seq_lens=[
             [(1, 1)],  # extremely compact context
             [(1, 1), (1, 1)],
-            [(1, 15)], # uneven structures where total context length evaluates to less than page_size=16
+            # Uneven context shorter than page_size=16.
+            [(1, 15)],
             [(2, 5)],
+            # At, immediately above, and around one- and two-page boundaries.
+            [(1, 16), (1, 17), (1, 31), (1, 32), (1, 33)],
         ],
     )
     def test_ragged_paged_attention_boundary_seq_lens(self, dtype, seq_lens):
