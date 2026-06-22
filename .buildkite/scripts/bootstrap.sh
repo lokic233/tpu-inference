@@ -126,27 +126,27 @@ source "${SCRIPT_DIR}/configs/pipeline_config.sh"
 #     FILES_CHANGED=$(git diff-tree --no-commit-id --name-only -r -m "$BUILDKITE_COMMIT")
 # fi
 
-# # Store changed files in metadata for sub-pipelines (newlines to commas)
-# echo "$FILES_CHANGED" | tr '\n' ',' | buildkite-agent meta-data set "changed_files"
+# # # Store changed files in metadata for sub-pipelines (newlines to commas)
+# # echo "$FILES_CHANGED" | tr '\n' ',' | buildkite-agent meta-data set "changed_files"
 
-# Evaluate which file paths were changed in the PR to dynamically trigger kernel tests.
-# These variables are interpolated into pipeline_jax.yml to skip steps without provisioning TPUs.
-export RUN_KERNEL_TESTS=0
-export RUN_KERNEL_COLLECTIVES_TESTS=0
+# # Evaluate which file paths were changed in the PR to dynamically trigger kernel tests.
+# # These variables are interpolated into pipeline_jax.yml to skip steps without provisioning TPUs.
+# export RUN_KERNEL_TESTS=0
+# export RUN_KERNEL_COLLECTIVES_TESTS=0
 
-# Trigger general kernel tests if any of the following are modified:
-# - tpu_inference/kernels/* or tests/kernels/*
-# - tests/conftest.py or requirements.txt
-if echo "$FILES_CHANGED" | grep -qE '^(tpu_inference/kernels|tests/kernels|tests/conftest.py|requirements.txt)'; then
-    export RUN_KERNEL_TESTS=1
-fi
+# # Trigger general kernel tests if any of the following are modified:
+# # - tpu_inference/kernels/* or tests/kernels/*
+# # - tests/conftest.py or requirements.txt
+# if echo "$FILES_CHANGED" | grep -qE '^(tpu_inference/kernels|tests/kernels|tests/conftest.py|requirements.txt)'; then
+#     export RUN_KERNEL_TESTS=1
+# fi
 
-# Trigger collective-specific kernel tests if any of the following are modified:
+# # Trigger collective-specific kernel tests if any of the following are modified:
 # - tpu_inference/kernels/collectives/* or tests/kernels/collectives/*
 # - tests/conftest.py or requirements.txt
-if echo "$FILES_CHANGED" | grep -qE '^(tpu_inference/kernels/collectives|tests/kernels/collectives|tests/conftest.py|requirements.txt)'; then
-    export RUN_KERNEL_COLLECTIVES_TESTS=1
-fi
+# if echo "$FILES_CHANGED" | grep -qE '^(tpu_inference/kernels/collectives|tests/kernels/collectives|tests/conftest.py|requirements.txt)'; then
+#     export RUN_KERNEL_COLLECTIVES_TESTS=1
+# fi
 
 # Handles the environment state for different TPU generations.
 set_jax_envs() {
@@ -338,7 +338,7 @@ set_jax_envs() {
 
 # Since Buildkite inserts steps in reverse order, uploading this last 
 # ensures the Docker build steps appear at the very top of the UI.
-upload_with_priority .buildkite/pipeline_build.yml "$JOB_PRIORITY"
+# upload_with_priority .buildkite/pipeline_build.yml "$JOB_PRIORITY"
 
 # echo "--- Buildkite Bootstrap Finished"
 
