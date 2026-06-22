@@ -204,3 +204,4 @@ csrc/moe/marlin_moe_wna16/kernel_*
 
 !/support_matrices/**
 ./test/kernels/ragged_paged_attention_test.py
+**/ragged_paged_attention_test.py
