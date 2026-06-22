@@ -28,11 +28,6 @@ from tpu_inference.kernels.ragged_paged_attention.v3.util import (
 
 jax.config.parse_flags_with_absl()
 
-
-def cdiv(a: int, b: int) -> int:
-    """Ceiling division."""
-    return (a + b - 1) // b
-
 @jtu.with_config(jax_numpy_dtype_promotion="standard")
 class RaggedPagedAttentionKernelTest(jtu.JaxTestCase):
 
@@ -46,6 +41,7 @@ class RaggedPagedAttentionKernelTest(jtu.JaxTestCase):
         kv_dtype,
         num_pages,
         *,
+        distribution: jax.Array | None = None,
         bq_sz=64,
         bkv_sz=256,
         bq_csz=32,
@@ -53,6 +49,7 @@ class RaggedPagedAttentionKernelTest(jtu.JaxTestCase):
         vmem_limit_bytes=100 * 1024 * 1024,
         max_num_batched_tokens=512,
         max_num_seq=8,
+        chunk_prefill_size: int | None = None,
         sliding_window: int | None = None,
         soft_cap: float | None = None,
         q_scale: float | None = None,
@@ -159,7 +156,10 @@ class RaggedPagedAttentionKernelTest(jtu.JaxTestCase):
                             (0, max_num_seq + 1 - cu_q_lens.shape[0]))
         kv_lens = jnp.array(kv_lens, dtype=jnp.int32)
         kv_lens = jnp.pad(kv_lens, (0, max_num_seq - kv_lens.shape[0]))
-        distribution = jnp.array([0, 0, len(seq_lens)], dtype=jnp.int32)
+
+        if distribution is None:
+            distribution = [0, 0, len(seq_lens)]
+        distribution = jnp.array(distribution, dtype=jnp.int32)
 
         args = (
             q,
@@ -190,6 +190,7 @@ class RaggedPagedAttentionKernelTest(jtu.JaxTestCase):
             *args,
             **kwargs,
             m_block_sizes=(bq_sz, bkv_sz, bq_csz, bkv_csz),
+            chunk_prefill_size=chunk_prefill_size,
             vmem_limit_bytes=vmem_limit_bytes,
         )
 
@@ -321,6 +322,7 @@ class RaggedPagedAttentionKernelTest(jtu.JaxTestCase):
             (1, 87),
             (1, 1328),
         ]
+        distribution = [len(seq_lens), len(seq_lens), len(seq_lens)]
         num_heads = (32, 8)
         head_dim = 128
         page_size = 16
@@ -334,28 +336,31 @@ class RaggedPagedAttentionKernelTest(jtu.JaxTestCase):
             dtype,
             dtype,
             num_pages,
+            distribution=distribution
         )
 
     @parameterized.product(dtype=[jnp.float32, jnp.bfloat16], )
     def test_ragged_paged_attention_prefill_only(self, dtype):
+        chunk_prefill_size = 16
         seq_lens = [
-            (5, 18),
-            (15, 129),
-            (120, 597),
-            (100, 122),
-            (21, 64),
-            (32, 322),
-            (251, 463),
-            (40, 181),
-            (64, 1107),
-            (99, 123),
-            (10, 31),
-            (5, 18),
-            (3, 1229),
-            (120, 229),
-            (9, 87),
-            (2, 1328),
+            (chunk_prefill_size, 18),
+            (chunk_prefill_size, 129),
+            (chunk_prefill_size, 597),
+            (chunk_prefill_size, 122),
+            (chunk_prefill_size, 64),
+            (chunk_prefill_size, 322),
+            (chunk_prefill_size, 463),
+            (chunk_prefill_size, 181),
+            (chunk_prefill_size, 1107),
+            (chunk_prefill_size, 123),
+            (chunk_prefill_size, 31),
+            (chunk_prefill_size, 18),
+            (chunk_prefill_size, 1229),
+            (chunk_prefill_size, 229),
+            (chunk_prefill_size, 87),
+            (chunk_prefill_size, 1328),
         ]
+        distribution = [0, len(seq_lens), len(seq_lens)]
         num_heads = (32, 8)
         head_dim = 128
         page_size = 16
@@ -369,28 +374,38 @@ class RaggedPagedAttentionKernelTest(jtu.JaxTestCase):
             dtype,
             dtype,
             num_pages,
+            distribution=distribution,
+            chunk_prefill_size=chunk_prefill_size,
         )
 
     @parameterized.product(dtype=[jnp.float32, jnp.bfloat16], )
     def test_ragged_paged_attention_mixed(self, dtype):
-        seq_lens = [
-            (5, 18),
+        decode_seq_len = [
             (1, 129),
-            (120, 597),
             (1, 122),
             (1, 64),
-            (32, 322),
-            (251, 463),
             (1, 181),
-            (1, 1107),
-            (99, 123),
-            (1, 31),
-            (5, 18),
-            (3, 1229),
-            (117, 229),
-            (1, 87),
-            (1, 1328),
         ]
+        prefill_seq_len = [
+            (32, 120),
+            (32, 322),
+            (32, 99),
+        ]
+        mixed_seq_len = [
+            (5, 18),
+            (120, 597),
+            (251, 463),
+            (117, 229),
+        ]
+        seq_lens = decode_seq_len + prefill_seq_len + mixed_seq_len
+        num_decode = len(decode_seq_len)
+        num_prefill = len(prefill_seq_len)
+        distribution = [
+            num_decode,
+            num_decode + num_prefill,
+            len(seq_lens)
+        ]
+
         num_heads = (32, 8)
         head_dim = 128
         page_size = 16
@@ -404,6 +419,8 @@ class RaggedPagedAttentionKernelTest(jtu.JaxTestCase):
             dtype,
             dtype,
             num_pages,
+            distribution=distribution,
+            chunk_prefill_size=32,
         )
 
     @parameterized.product(
@@ -568,7 +585,7 @@ class RaggedPagedAttentionKernelTest(jtu.JaxTestCase):
             )
 
     def test_ragged_paged_attention_zero_length_query(self):
-        """Verifies correct execution when a sequence has zero query tokens.
+        """Verifies zero query length is rejected.
 
         This can occur in chunked prefill or dynamic scheduling scenarios where
         a sequence is temporarily paused but its history is preserved in the cache.
