@@ -544,6 +544,19 @@ class TPUConnectorWorker:
         self.shape = list(kv_layer.shape)
         self.dtype = kv_layer.dtype
         self.sharding = kv_layer.sharding
+        # NOTE(navi/gemma4-disagg-fix): KV cache layers are NOT guaranteed to
+        # share one shape. Gemma-4 interleaves sliding_attention (num_kv_heads=16,
+        # head_dim=256) and full_attention (num_global_key_value_heads=4,
+        # global_head_dim=512) layers, giving per-layer KV caches with different
+        # (heads, head_dim) factoring. The transfer spec MUST be built per-layer
+        # from each layer's live cache, or the P->D DMA copy pairs a sliding-layer
+        # source block with a full-layer destination slot and Mosaic raises
+        # "tpu.enqueue_dma op DMA source and target shape mismatch". Cache each
+        # layer's live shape/dtype/sharding here (producer select/insert paths are
+        # already per-layer; only the consumer spec was uniform).
+        self.layer_shapes = [list(c.shape) for c in kv_caches]
+        self.layer_dtypes = [c.dtype for c in kv_caches]
+        self.layer_shardings = [c.sharding for c in kv_caches]
         self.host_sharding = jax.sharding.NamedSharding(
             self.sharding.mesh,
             self.sharding.spec,
@@ -872,12 +885,21 @@ class TPUConnectorWorker:
         return kv
 
     def _get_kv_spec(self, num_blocks: int) -> list[jax.ShapeDtypeStruct]:
+        # NOTE(navi/gemma4-disagg-fix): build ONE spec PER LAYER from that layer's
+        # live cache shape/dtype/sharding. Previously this returned a single
+        # kv_caches[0]-derived spec replicated `* num_layers`, which is only correct
+        # for models with homogeneous per-layer KV shapes (e.g. Qwen3). Gemma-4's
+        # heterogeneous sliding/full layers need distinct specs so each producer
+        # layer block maps to a destination slot of matching shape.
         assert num_blocks <= self.shape[0]
-        shape = copy.copy(self.shape)
-        shape[0] = num_blocks
-        return [
-            jax.ShapeDtypeStruct(shape, self.dtype, sharding=self.sharding)
-        ] * self.num_layers
+        specs = []
+        for shape, dtype, sharding in zip(self.layer_shapes, self.layer_dtypes,
+                                          self.layer_shardings):
+            layer_shape = copy.copy(shape)
+            layer_shape[0] = num_blocks
+            specs.append(
+                jax.ShapeDtypeStruct(layer_shape, dtype, sharding=sharding))
+        return specs
 
     def _maybe_build_notif_socket(self, req_meta: LoadMeta) -> zmq.Socket:
         remote_host = req_meta.remote_host
