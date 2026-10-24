@@ -74,7 +74,7 @@ from tpu_inference.models.jax.jax_intermediate_tensor import \
 from tpu_inference.runner import host_input_fast_path
 from tpu_inference.runner import utils as runner_utils
 from tpu_inference.runner.compilation_manager import CompilationManager
-from tpu_inference.runner.decode_loop import (TpuSamplingState,
+from tpu_inference.runner.decode_loop import (TpuSamplingState, _alldone_note,
                                               _deadkv_config_gate,
                                               _deadkv_note,
                                               _skipmixed_chunk_check,
@@ -200,6 +200,8 @@ def _log_continue_decode_summary(
     num_eos_hits: int,
 ) -> None:
     """Log debug summary for continue_decode completion."""
+    # CONTINUE_DECODE_ALL_DONE_EXIT log line (no-op when off).
+    _alldone_note(actual_steps, max_decode_steps, num_reqs)
     termination_reason = REASON_UNKNOWN
     if actual_steps < max_decode_steps:
         termination_reason = REASON_EOS_HIT
