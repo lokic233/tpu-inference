@@ -76,7 +76,9 @@ from tpu_inference.runner import utils as runner_utils
 from tpu_inference.runner.compilation_manager import CompilationManager
 from tpu_inference.runner.decode_loop import (TpuSamplingState,
                                               _deadkv_config_gate,
-                                              _deadkv_note, continue_decode)
+                                              _deadkv_note,
+                                              _skipmixed_chunk_check,
+                                              continue_decode)
 from tpu_inference.runner.input_batch import CachedRequestState, InputBatch
 from tpu_inference.runner.kv_cache_manager import KVCacheManager
 from tpu_inference.runner.lora_utils import LoraUtils
@@ -1940,6 +1942,10 @@ class TPUModelRunner(KVConnectorModelRunnerMixin, LoRAModelRunnerMixin):
             tokens_indices_selector,
             _,
         ) = self._prepare_inputs(scheduler_output)
+
+        # CONTINUE_DECODE_SKIP_MIXED_RPA: host check + log line before the
+        # skip-MIXED decode program is dispatched; no-op when off.
+        _skipmixed_chunk_check(self, scheduler_output, req_ids_dp)
 
         init_tokens = input_ids
         # Map active rows correctly across DP buckets by checking valid query locations.

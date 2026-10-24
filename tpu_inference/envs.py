@@ -125,6 +125,8 @@ if TYPE_CHECKING:
     RPA_V3_DECODE_COMPUTE_BUCKET_MODE: str = "padsum"
     # RPA v3 DECODE scoped-VMEM cap, MiB
     RPA_V3_DECODE_VMEM_LIMIT_MIB: int = 0
+    # Drop the empty MIXED RPA launch inside continue_decode
+    CONTINUE_DECODE_SKIP_MIXED_RPA: bool = False
 
 
 def env_with_choices(
@@ -754,6 +756,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # tiles need fails to compile. 0 (default) = stock full-capacity limit.
     "RPA_V3_DECODE_VMEM_LIMIT_MIB":
     lambda: int(os.getenv("RPA_V3_DECODE_VMEM_LIMIT_MIB") or "0"),
+    # Inside the fused continue-decode loop (decode-only
+    # batches) drop the RPA v3 MIXED launch, which iterates zero sequences
+    # there. Default off = stock DECODE + MIXED launches everywhere.
+    "CONTINUE_DECODE_SKIP_MIXED_RPA":
+    env_bool("CONTINUE_DECODE_SKIP_MIXED_RPA", default=False),
 }
 
 
