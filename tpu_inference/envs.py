@@ -130,6 +130,8 @@ if TYPE_CHECKING:
     # Early-exit the continue_decode window when every row is done
     CONTINUE_DECODE_ALL_DONE_EXIT: bool = False
     CONTINUE_DECODE_ALL_DONE_EVERY: int = 8
+    # Keep sampled tokens data-sharded on a process-local mesh
+    SAMPLING_DP_LOCAL_OUTPUT: bool = False
 
 
 def env_with_choices(
@@ -772,6 +774,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     env_bool("CONTINUE_DECODE_ALL_DONE_EXIT", default=False),
     "CONTINUE_DECODE_ALL_DONE_EVERY":
     lambda: int(os.getenv("CONTINUE_DECODE_ALL_DONE_EVERY") or "8"),
+    # Keep the sampled tokens on the ATTN_DATA
+    # sharding instead of replicating them every step, when sampling and the
+    # mesh is local to this process. Default off = stock replicated P().
+    "SAMPLING_DP_LOCAL_OUTPUT":
+    env_bool("SAMPLING_DP_LOCAL_OUTPUT", default=False),
 }
 
 
