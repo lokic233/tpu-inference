@@ -118,6 +118,8 @@ if TYPE_CHECKING:
     HOST_INPUT_FAST_PATH_PARTS: str = "default"
     HOST_INPUT_FAST_PATH_CHECK: int = 3
     HOST_INPUT_FAST_PATH_LOG_EVERY: int = 100
+    # Clamp attention reads of finished rows in continue_decode
+    CONTINUE_DECODE_DEAD_KV_CLAMP: bool = False
 
 
 def env_with_choices(
@@ -727,6 +729,12 @@ environment_variables: dict[str, Callable[[], Any]] = {
     lambda: int(os.getenv("HOST_INPUT_FAST_PATH_CHECK") or "3"),
     "HOST_INPUT_FAST_PATH_LOG_EVERY":
     lambda: int(os.getenv("HOST_INPUT_FAST_PATH_LOG_EVERY") or "100"),
+    # Inside the fused continue-decode loop, give rows that
+    # already sampled EOS seq_lens=1 in the attention metadata so attention
+    # stops reading their KV. Requires enable_prefix_caching=False (checked at
+    # runner init). Default off = stock seq_lens.
+    "CONTINUE_DECODE_DEAD_KV_CLAMP":
+    env_bool("CONTINUE_DECODE_DEAD_KV_CLAMP", default=False),
 }
 
 

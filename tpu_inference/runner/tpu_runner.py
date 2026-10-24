@@ -74,7 +74,9 @@ from tpu_inference.models.jax.jax_intermediate_tensor import \
 from tpu_inference.runner import host_input_fast_path
 from tpu_inference.runner import utils as runner_utils
 from tpu_inference.runner.compilation_manager import CompilationManager
-from tpu_inference.runner.decode_loop import TpuSamplingState, continue_decode
+from tpu_inference.runner.decode_loop import (TpuSamplingState,
+                                              _deadkv_config_gate,
+                                              _deadkv_note, continue_decode)
 from tpu_inference.runner.input_batch import CachedRequestState, InputBatch
 from tpu_inference.runner.kv_cache_manager import KVCacheManager
 from tpu_inference.runner.lora_utils import LoraUtils
@@ -295,6 +297,8 @@ def _process_continue_decode_outputs(
     valid_lens, has_eos = _extract_valid_lengths_host(generated_tokens_cpu,
                                                       eos_token_id)
     num_eos_hits = int(has_eos.sum())
+    # CONTINUE_DECODE_DEAD_KV_CLAMP log line (no-op when off).
+    _deadkv_note(valid_lens, has_eos, len(req_ids), actual_steps_int)
     requests_dict = requests if requests is not None and hasattr(
         requests, "get") else None
     chunk_start: Dict[str, int] = {}
@@ -877,6 +881,9 @@ class TPUModelRunner(KVConnectorModelRunnerMixin, LoRAModelRunnerMixin):
         # HOST_INPUT_FAST_PATH: resolve the fast-path parts for this runner;
         # no-op when the flag is off.
         host_input_fast_path.gate(self)
+        # CONTINUE_DECODE_DEAD_KV_CLAMP: refuse the clamp unless this
+        # config makes it exact; no-op when the flag is off.
+        _deadkv_config_gate(self)
 
     def _init_random(self):
         if self.model_config.seed is None:
