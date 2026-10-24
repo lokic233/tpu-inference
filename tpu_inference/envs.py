@@ -120,6 +120,9 @@ if TYPE_CHECKING:
     HOST_INPUT_FAST_PATH_LOG_EVERY: int = 100
     # Clamp attention reads of finished rows in continue_decode
     CONTINUE_DECODE_DEAD_KV_CLAMP: bool = False
+    # RPA v3 bucketed DECODE attention compute extent
+    RPA_V3_DECODE_COMPUTE_BUCKETS: str = ""
+    RPA_V3_DECODE_COMPUTE_BUCKET_MODE: str = "padsum"
 
 
 def env_with_choices(
@@ -735,6 +738,14 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # runner init). Default off = stock seq_lens.
     "CONTINUE_DECODE_DEAD_KV_CLAMP":
     env_bool("CONTINUE_DECODE_DEAD_KV_CLAMP", default=False),
+    # Comma-separated DECODE compute extents (positive
+    # multiples of 128, e.g. "256,512,1024") for the RPA v3 kernel when a KV
+    # block is one attention-loop iteration; unset = stock full-block extent.
+    # RPA_V3_DECODE_COMPUTE_BUCKET_MODE = padsum (default) | padall | full.
+    "RPA_V3_DECODE_COMPUTE_BUCKETS":
+    lambda: os.getenv("RPA_V3_DECODE_COMPUTE_BUCKETS", ""),
+    "RPA_V3_DECODE_COMPUTE_BUCKET_MODE":
+    lambda: os.getenv("RPA_V3_DECODE_COMPUTE_BUCKET_MODE", "padsum"),
 }
 
 
