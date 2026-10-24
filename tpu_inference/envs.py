@@ -111,6 +111,8 @@ if TYPE_CHECKING:
     DP_SCHED_ROUTE_MIRROR_WINDOW: int = 64
     DP_SCHED_ROUTE_MIRROR_LOG_EVERY: int = 1
     DP_SCHED_ROUTE_MIRROR_FAULT_INJECT: str = ""
+    # Skip the DPScheduler grammar-bitmask fan-out without grammar requests
+    DP_SCHED_SKIP_GRAMMAR_FANOUT: bool = False
 
 
 def env_with_choices(
@@ -703,6 +705,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Test-only positive control for the CHECK bursts; leave unset.
     "DP_SCHED_ROUTE_MIRROR_FAULT_INJECT":
     lambda: os.getenv("DP_SCHED_ROUTE_MIRROR_FAULT_INJECT", ""),
+    # Return None from DPScheduler.get_grammar_bitmask without the
+    # per-rank IPC fan-out when no rank has structured-output requests (the
+    # value every rank would return). Default off = stock fan-out every step.
+    "DP_SCHED_SKIP_GRAMMAR_FANOUT":
+    env_bool("DP_SCHED_SKIP_GRAMMAR_FANOUT", default=False),
 }
 
 
