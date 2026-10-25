@@ -70,7 +70,10 @@ def _rpa_like_model(batch_size, dp_size, eos_pos):
     The new token's KV goes to slot seq_lens - 1 of the attention metadata and
     attention reads the slots before it, as in ragged paged attention. The
     dead-row KV clamp acts on those seq_lens, so this model sees what the
-    clamp changes. kv_caches[1] holds the highest slot each row wrote.
+    clamp changes. As in that model, the KV value written depends on the
+    token, its position and the slots before it, so a step re-run at another
+    position or over other KV writes another value. kv_caches[1] holds the
+    highest slot each row wrote.
     """
     eos_pos = jnp.asarray(eos_pos, dtype=jnp.int32)
     rows_per_dp = batch_size // dp_size
@@ -84,12 +87,14 @@ def _rpa_like_model(batch_size, dp_size, eos_pos):
         rows = jnp.arange(batch_size)
         width = slots.shape[1]
         col = jnp.clip(seq_lens - 1, 0, width - 1)
-        before = jnp.arange(width)[None, :] < col[:, None]
-        context = jnp.sum(jnp.where(before, slots, 0), axis=1)
-        next_tokens = (input_ids * 7 + pos * 13 + context) % (VOCAB - 2) + 2
+        cols = jnp.arange(width)[None, :]
+        before = cols < col[:, None]
+        context = jnp.sum(jnp.where(before, slots * (cols % 7 + 1), 0), axis=1)
+        kv_value = (input_ids * 131 + pos * 17 + context) % 9973 + 2
+        next_tokens = (kv_value * 7 + pos * 13) % (VOCAB - 2) + 2
         next_tokens = jnp.where(pos == eos_pos, EOS, next_tokens)
         slots = slots.at[rows,
-                         col].set(jnp.where(real, input_ids, slots[rows, col]))
+                         col].set(jnp.where(real, kv_value, slots[rows, col]))
         max_slot = jnp.where(real, jnp.maximum(max_slot, col), max_slot)
         folded = folded + real.astype(jnp.int32)
         return ([slots, max_slot, calls + 1,
