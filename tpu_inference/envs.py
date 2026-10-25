@@ -427,13 +427,17 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # per-process safe window. That bound is the loop's trip count only without
     # the EOS early exit, so with enable_continue_decode the runner refuses to
     # start unless CONTINUE_DECODE_EOS_CHECK_INTERVAL <= 0 (requests still stop
-    # at their own EOS). The per-request safety window (max_model_len and Mamba
-    # block boundaries) is still honoured: iterations past it are masked and
-    # only repeat the last in-window step. With enable_continue_decode, Mamba
-    # models are rejected at KV cache init in mamba_cache_mode 'align'; in
-    # other modes the first window that needs masking raises, but only on the
-    # process whose batch shortened the window. Costs compilation flexibility
-    # (one shape). Default false = stock per-process data-dependent dispatch.
+    # at their own EOS). With CONTINUE_DECODE_ALL_DONE_EXIT on, the loop also
+    # stops once every row of the process has ended, so the trip count is
+    # static_max_decode_steps only while that exit does not fire; leave it off
+    # for a fully data-independent trip count. The per-request safety window
+    # (max_model_len and Mamba block boundaries) is still honoured: iterations
+    # past it are masked and only repeat the last in-window step. With
+    # enable_continue_decode, Mamba models are rejected at KV cache init in
+    # mamba_cache_mode 'align'; in other modes the first window that needs
+    # masking raises, but only on the process whose batch shortened the
+    # window. Costs compilation flexibility (one shape). Default false = stock
+    # per-process data-dependent dispatch.
     "GANG_SYMMETRIC_DISPATCH":
     env_bool("GANG_SYMMETRIC_DISPATCH"),
     # dictates whether to layout q-proj as NDH (q-heads, model dim, head dim)
@@ -774,8 +778,9 @@ environment_variables: dict[str, Callable[[], Any]] = {
     env_bool("CONTINUE_DECODE_SKIP_MIXED_RPA", default=False),
     # With CONTINUE_DECODE_EOS_CHECK_INTERVAL<=0, stop the fused
     # continue-decode window once every row has hit EOS, tested on device
-    # every CONTINUE_DECODE_ALL_DONE_EVERY (default 8) steps. Default off =
-    # stock full-window run.
+    # every CONTINUE_DECODE_ALL_DONE_EVERY (default 8) steps. Under
+    # GANG_SYMMETRIC_DISPATCH the trip count then depends on the data whenever
+    # the exit fires. Default off = stock full-window run.
     "CONTINUE_DECODE_ALL_DONE_EXIT":
     env_bool("CONTINUE_DECODE_ALL_DONE_EXIT", default=False),
     "CONTINUE_DECODE_ALL_DONE_EVERY":

@@ -19,7 +19,9 @@ early exit off (CONTINUE_DECODE_EOS_CHECK_INTERVAL <= 0) that bound is the
 trip count, so every process of a gang runs the same number of loop
 iterations; with an EOS check the loop still stops after any row hits EOS and
 the trip count follows the data, so the runner refuses that combination at
-init. A request may still only advance within the stock window, which is
+init. (The opt-in CONTINUE_DECODE_ALL_DONE_EXIT can also end the loop early,
+once every row has ended; see test_gang_symmetric_decode_levers.py.) A
+request may still only advance within the stock window, which is
 bounded by max_model_len and, in Mamba align mode, by Mamba block boundaries.
 These tests run the real runner + decode loop with a small stand-in model on
 CPU and check that the gang path never writes past those bounds, produces the

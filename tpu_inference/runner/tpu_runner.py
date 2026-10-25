@@ -268,7 +268,10 @@ def _check_gang_symmetric_eos_check_interval(eos_check_interval: int) -> None:
     (CONTINUE_DECODE_EOS_CHECK_INTERVAL > 0) it still stops at the first check
     after any row of this process hit EOS, so processes with different data
     would run different trip counts. Only an interval <= 0 (no EOS early
-    exit) keeps the trip count at static_max_decode_steps on every process.
+    exit) keeps the trip count at static_max_decode_steps on every process,
+    and only while the opt-in all-done exit (CONTINUE_DECODE_ALL_DONE_EXIT)
+    does not fire: once every row of a process has ended it stops that
+    process's loop early too.
     """
     if eos_check_interval > 0:
         raise ValueError(
@@ -2071,7 +2074,7 @@ class TPUModelRunner(KVConnectorModelRunnerMixin, LoRAModelRunnerMixin):
         # bound is pinned to static_max_decode_steps, with the iterations past
         # max_decode_steps masked (see continue_decode). That bound is the
         # trip count because __init__ requires the EOS early exit to be off
-        # under this flag.
+        # under this flag, unless the opt-in all-done exit fires.
         fixed_trip_count = envs.GANG_SYMMETRIC_DISPATCH
         if fixed_trip_count:
             _check_gang_symmetric_decode_window(

@@ -771,7 +771,8 @@ def _decode_core_impl(
         return i, ct, am, pos, sl, kvc, tb, eb, lp_ids, lp_val, lp_ranks, eos
 
     # See fixed_trip_count below: the bound is then static, and it is the trip
-    # count when the EOS early exit is off.
+    # count when the EOS early exit is off and the all-done exit (if on) does
+    # not fire.
     loop_bound = (static_max_decode_steps
                   if fixed_trip_count else max_decode_steps)
 
@@ -836,13 +837,14 @@ def _decode_core_impl(
     if fixed_trip_count:
         # Data-independent loop bound: run up to static_max_decode_steps
         # iterations, exactly that many when continue_decode_eos_check_interval
-        # <= 0 (an EOS check still stops the loop early, as in the stock loop).
-        # Only the first max_decode_steps may sample or advance a request.
-        # Every later iteration re-runs the inputs of the last such step with
-        # all rows inactive (nothing recorded, no EOS hit, nothing advanced),
-        # so it rewrites the same KV values into the same slots and never
-        # touches a position beyond the stock loop's window (e.g. past
-        # max_model_len). The loop state is kept as of the end of the window.
+        # <= 0 (an EOS check still stops the loop early, as in the stock loop)
+        # and the all-done exit, if on, does not fire. Only the first
+        # max_decode_steps may sample or advance a request. Every later
+        # iteration re-runs the inputs of the last such step with all rows
+        # inactive (nothing recorded, no EOS hit, nothing advanced), so it
+        # rewrites the same KV values into the same slots and never touches a
+        # position beyond the stock loop's window (e.g. past max_model_len).
+        # The loop state is kept as of the end of the window.
         # With the opt-in loop levers on, a masked iteration stays invisible
         # too: the dead-row KV clamp reads the active mask of the step being
         # repeated (so the KV writes land where that step put them), and the
@@ -1026,7 +1028,8 @@ def continue_decode(
         With CONTINUE_DECODE_DEAD_KV_CLAMP the re-runs keep the attention
         metadata of the step they repeat; with CONTINUE_DECODE_ALL_DONE_EXIT
         the loop may still stop early, but only once every row has ended
-        within the window, never because rows are paused by it.
+        within the window, never because rows are paused by it. The trip
+        count is then data-dependent whenever that exit fires.
 
     Returns:
       Tuple of (generated_tokens, final_kv_caches, final_state, final_rng,
@@ -1034,8 +1037,8 @@ def continue_decode(
       (static_max_decode_steps, batch_size) array and all_expert_indices, when
       not None, is (static_max_decode_steps, ...); rows beyond
       final_state.step_counter are padding (step_counter is at most
-      max_decode_steps, and an early EOS exit may stop before that), so the
-      caller must trim with final_state.step_counter.
+      max_decode_steps, and an early EOS or all-done exit may stop before
+      that), so the caller must trim with final_state.step_counter.
     """
     from tpu_inference.layers.jax.sample.sampling import sample
     if sample_fn is sample:

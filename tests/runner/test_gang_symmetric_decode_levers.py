@@ -13,10 +13,10 @@
 # limitations under the License.
 """Gang-symmetric continue_decode combined with the continue_decode levers.
 
-Under GANG_SYMMETRIC_DISPATCH the fused decode loop runs
-static_max_decode_steps iterations and masks the ones past the safe window:
-each masked iteration re-runs the inputs of the last in-window step with every
-row inactive (see test_gang_symmetric_decode.py). These tests check that the
+Under GANG_SYMMETRIC_DISPATCH the fused decode loop is bounded by
+static_max_decode_steps and masks the iterations past the safe window: each
+masked iteration re-runs the inputs of the last in-window step with every row
+inactive (see test_gang_symmetric_decode.py). These tests check that the
 masked iterations stay invisible when the opt-in loop levers are on:
 
 - CONTINUE_DECODE_DEAD_KV_CLAMP shortens the attention seq_lens of rows that
@@ -26,7 +26,9 @@ masked iterations stay invisible when the opt-in loop levers are on:
   first page and overwrite the KV of its first token.
 - CONTINUE_DECODE_ALL_DONE_EXIT stops the loop once no row is active. Rows
   that are only paused by the window must not count as done, otherwise the
-  trip count would depend on the window again.
+  trip count would depend on the window again. Rows that have really ended
+  still stop the loop, so with this lever on the gang trip count depends on
+  the data whenever the exit fires.
 - CONTINUE_DECODE_SKIP_MIXED_RPA only changes how model_fn is traced.
 
 The flags are module constants read at import, so the tests set them on the
