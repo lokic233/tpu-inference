@@ -641,11 +641,13 @@ def _decode_core_impl(
     model_fn = _skipmixed_wrap_model_fn(model_fn, current_tokens, seq_lens,
                                         block_tables, request_distribution)
 
-    def _run_one_step(step_idx, ct, am, pos, sl, kvc):
+    def _run_one_step(step_idx, ct, am, pos, sl, kvc, clamp_mask=None):
         step_rng = step_rngs[step_idx]
         # Dead-row KV clamp: attention-only seq_lens (off: `sl` itself).
-        attn_sl = _deadkv_seq_lens(am, sl, dp_size, pad_len,
-                                   mamba_state_indices)
+        # A masked fixed_trip_count iteration passes the active mask of the
+        # step it repeats as clamp_mask.
+        attn_sl = _deadkv_seq_lens(am if clamp_mask is None else clamp_mask,
+                                   sl, dp_size, pad_len, mamba_state_indices)
         attn_metadata = _build_attn_metadata(
             input_positions=pos,
             block_tables=block_tables,
@@ -787,12 +789,13 @@ def _decode_core_impl(
             jnp.logical_not(jnp.logical_and(eos_flag, should_check_eos)),
         )
 
-    def body_fn(carry):
+    def body_fn(carry, clamp_mask=None, done_mask=None):
+        # clamp_mask / done_mask: only for fixed_trip_count, see below.
         (i, ct, am, pos, sl, kvc, tb, eb, lp_ids_buf, lp_val_buf, lp_ranks_buf,
          eos_flag) = _unpack(carry)
         (next_ct, new_mask, new_pos, new_sl, kvc, rec_tokens, experts,
          lp_ids_step, lp_val_step, lp_ranks_step,
-         hit) = _run_one_step(i, ct, am, pos, sl, kvc)
+         hit) = _run_one_step(i, ct, am, pos, sl, kvc, clamp_mask)
         tb = tb.at[i].set(rec_tokens)
         if has_experts:
             eb = eb.at[i].set(experts)
@@ -808,7 +811,8 @@ def _decode_core_impl(
             new_eos_flag = eos_flag
             if _ALLDONE_EVERY > 0:
                 # All-done exit: set on device at checkpoints, read by cond_fn.
-                new_eos_flag = _alldone_flag(i, new_mask)
+                new_eos_flag = _alldone_flag(
+                    i, new_mask if done_mask is None else done_mask(new_mask))
         else:
             new_eos_flag = jnp.logical_or(eos_flag, hit)
         return _pack(i + 1, next_ct, new_mask, new_pos, new_sl, kvc, tb, eb,
@@ -836,7 +840,11 @@ def _decode_core_impl(
         # advanced), so it rewrites the same KV values into the same slots
         # and never touches a position beyond the stock loop's window (e.g.
         # past max_model_len). The loop state is kept as of the end of the
-        # window.
+        # window. With the opt-in loop levers on, a masked iteration stays
+        # invisible too: the dead-row KV clamp reads the active mask of the
+        # step being repeated (so the KV writes land where that step put
+        # them), and the all-done exit reads the rows' state as of the end
+        # of the window (a row paused by the window is not done).
         def fixed_cond_fn(carry):
             return cond_fn(carry[0])
 
@@ -849,17 +857,24 @@ def _decode_core_impl(
                 return jax.tree.map(lambda a, b: jnp.where(in_window, a, b),
                                     on, off)
 
-            step_ct, step_pos, step_sl = pick((ct, pos, sl), replay)
+            # The repeated step's active mask is only needed by the clamp.
+            step_inputs = (ct, pos, sl, am) if _DEADKV_ON else (ct, pos, sl)
+            step = pick(step_inputs, replay)
+            step_ct, step_pos, step_sl = step[:3]
             step_am = jnp.logical_and(am, in_window)
-            new_inner = body_fn((i, step_ct, step_am, step_pos, step_sl) +
-                                tuple(inner[5:]))
+            new_inner = body_fn(
+                (i, step_ct, step_am, step_pos, step_sl) + tuple(inner[5:]),
+                clamp_mask=step[3] if _DEADKV_ON else None,
+                done_mask=lambda m: jnp.where(in_window, m, am))
             kept = pick(tuple(new_inner[1:5]), (ct, am, pos, sl))
             new_inner = (new_inner[0], ) + kept + tuple(new_inner[5:])
-            return new_inner, pick((ct, pos, sl), replay)
+            return new_inner, pick(step_inputs, replay)
 
-        final_carry, _ = jax.lax.while_loop(
-            fixed_cond_fn, fixed_body_fn,
-            (init_carry, (current_tokens, input_positions, seq_lens)))
+        init_replay = (current_tokens, input_positions, seq_lens)
+        if _DEADKV_ON:
+            init_replay += (active_mask, )
+        final_carry, _ = jax.lax.while_loop(fixed_cond_fn, fixed_body_fn,
+                                            (init_carry, init_replay))
     else:
         final_carry = jax.lax.while_loop(cond_fn, body_fn, init_carry)
     (step_idx_final, current_tokens, active_mask, positions, seq_lens,
@@ -998,6 +1013,10 @@ def continue_decode(
         per-step buffers stay don't-care). Recurrent per-request state (e.g.
         Mamba) is not preserved by the re-runs, so this must not be combined
         with such models when max_decode_steps < static_max_decode_steps.
+        With CONTINUE_DECODE_DEAD_KV_CLAMP the re-runs keep the attention
+        metadata of the step they repeat; with CONTINUE_DECODE_ALL_DONE_EXIT
+        the loop may still stop early, but only once every row has ended
+        within the window, never because rows are paused by it.
 
     Returns:
       Tuple of (generated_tokens, final_kv_caches, final_state, final_rng,
