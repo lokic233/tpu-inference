@@ -13,22 +13,23 @@
 # limitations under the License.
 """Gang-symmetric continue_decode combined with the continue_decode levers.
 
-Under GANG_SYMMETRIC_DISPATCH the fused decode loop is bounded by
-static_max_decode_steps and masks the iterations past the safe window: each
-masked iteration re-runs the inputs of the last in-window step with every row
-inactive (see test_gang_symmetric_decode.py). These tests check that the
-masked iterations stay invisible when the opt-in loop levers are on:
+Under GANG_SYMMETRIC_DISPATCH the fused decode loop runs
+static_max_decode_steps iterations and each request decodes within its own
+window: once a row is past its window, each iteration re-runs that row's
+inputs of its last in-window step with the row inactive (see
+test_gang_symmetric_decode.py). These tests check that the masked rows stay
+invisible when the opt-in loop levers are on:
 
 - CONTINUE_DECODE_DEAD_KV_CLAMP shortens the attention seq_lens of rows that
-  are inactive when a step starts. A masked iteration must build the same
-  attention metadata as the step it repeats, or the clamp would move the KV
-  write of a request that is only paused (not finished) to slot 0 of its
-  first page and overwrite the KV of its first token.
+  are inactive when a step starts. A masked row must get the same attention
+  metadata as the step it repeats, or the clamp would move the KV write of a
+  request that only reached the end of its window (and has not ended) to
+  slot 0 of its first page and overwrite the KV of its first token.
 - CONTINUE_DECODE_ALL_DONE_EXIT stops the loop once no row is active. Rows
-  that are only paused by the window must not count as done, otherwise the
-  trip count would depend on the window again. Rows that have really ended
-  still stop the loop, so with this lever on the gang trip count depends on
-  the data whenever the exit fires.
+  that only reached the end of their window must not count as done,
+  otherwise the trip count would depend on the windows again. Rows that have
+  really ended still stop the loop, so with this lever on the gang trip
+  count depends on the data whenever the exit fires.
 - CONTINUE_DECODE_SKIP_MIXED_RPA only changes how model_fn is traced.
 
 The flags are module constants read at import, so the tests set them on the
@@ -140,12 +141,14 @@ def _prompt_slots(req):
     return 2 + (np.arange(n - 1) * 5 + req.row) % (VOCAB - 2)
 
 
-# A window limited to 12 steps by request 0 (500 of max_model_len 512 tokens).
-# Request 1 is paused at the window end and continues in the next window;
-# request 2 hits EOS inside the window.
+# Request 0 (500 of max_model_len 512 tokens) and request 1 (12 tokens short
+# of its max_tokens) both have 12-step windows, which are also the stock
+# window. Request 1 is decoded on in a second window
+# (test_gang_dead_kv_clamp_next_window_tokens); request 2 hits EOS inside
+# its window.
 WINDOW_REQS = [
     Req(num_tokens=500, row=0),
-    Req(num_tokens=100, row=1),
+    Req(num_tokens=100, row=1, max_tokens=13),
     # Processes positions 199, 200, ...; emits EOS at position 203.
     Req(num_tokens=200, row=2, eos_pos=203),
 ]
@@ -155,8 +158,8 @@ WINDOW_CONFIG = dict(max_model_len=512, static_steps=32)
 @pytest.mark.parametrize("eos_check_interval", [1, -1])
 def test_gang_dead_kv_clamp_keeps_paused_rows_kv(monkeypatch,
                                                  eos_check_interval):
-    """Dead-row KV clamp + masked iterations: a request that is only paused
-    at the window end keeps its KV, and everything matches the stock loop
+    """Dead-row KV clamp + masked rows: requests that only reached the end
+    of their window keep their KV, and everything matches the stock loop
     with the same clamp."""
     _set_levers(monkeypatch, dead_kv=True)
     config = dict(WINDOW_CONFIG, eos_check_interval=eos_check_interval)
@@ -211,9 +214,9 @@ def _second_window(monkeypatch, gang, first):
 
 
 def test_gang_dead_kv_clamp_next_window_tokens(monkeypatch):
-    """The paused request reads its KV again in the next window, so its
-    tokens there match the stock loop only if the masked iterations left
-    that KV alone."""
+    """The request stopped at the end of its window reads its KV again in
+    the next window, so its tokens there match the stock loop only if the
+    masked iterations left that KV alone."""
     _set_levers(monkeypatch, dead_kv=True)
     tokens = {}
     for gang in (False, True):
@@ -304,19 +307,115 @@ def test_fixed_trip_count_loop_with_all_loop_levers(monkeypatch,
 @pytest.mark.parametrize("all_done_every", [1, 4, 8])
 def test_gang_all_done_exit_does_not_count_paused_rows(monkeypatch,
                                                        all_done_every):
-    """All-done exit + masked iterations: rows paused by the window are not
+    """All-done exit + masked rows: rows that only reached the end of their
+    window (request 0 at max_model_len, request 1 at its max_tokens) are not
     done, so the trip count stays static_max_decode_steps."""
     _set_levers(monkeypatch, all_done_every=all_done_every)
-    reqs = [Req(num_tokens=500, row=0), Req(num_tokens=100, row=1)]
+    reqs = [
+        Req(num_tokens=500, row=0),
+        Req(num_tokens=100, row=1, max_tokens=13)
+    ]
     config = dict(WINDOW_CONFIG, eos_check_interval=-1)
     stock = gsd._run_window(monkeypatch, False, reqs, **config)
     gang = gsd._run_window(monkeypatch, True, reqs, **config)
     assert stock.calls == 12
     assert gang.calls == 32, (
         f"gang-symmetric loop stopped after {gang.calls} iterations: the "
-        "all-done exit counted rows paused by the window as done")
+        "all-done exit counted rows at the end of their window as done")
     gsd._assert_same_as_stock(gang, stock)
     assert int(gang.max_pos.max()) < 512
+
+
+@pytest.mark.parametrize("all_done_every", [1, 4, 8])
+def test_gang_all_done_exit_with_per_request_windows(monkeypatch,
+                                                     all_done_every):
+    """All-done exit with windows of 12 and 32 steps and a request that
+    ends at EOS: only the EOS request is done, so the loop runs all 32
+    steps, and each request gets what the stock loop gives it alone."""
+    _set_levers(monkeypatch, all_done_every=all_done_every)
+    reqs = [
+        Req(num_tokens=500, row=0),
+        Req(num_tokens=100, row=1),
+        # Processes positions 199, 200, ...; emits EOS at position 203.
+        Req(num_tokens=200, row=2, eos_pos=203),
+    ]
+    config = dict(WINDOW_CONFIG, eos_check_interval=-1)
+    gang = gsd._run_window(monkeypatch, True, reqs, **config)
+    assert gang.calls == 32
+    gsd._assert_rows_match_stock_alone(monkeypatch, gang, reqs[:2], [12, 32],
+                                       **config)
+    alone = gsd._run_window(monkeypatch, False, reqs[2:], **config)
+    assert gang.tokens[2] == alone.tokens[0]
+    assert len(gang.tokens[2]) == 5 and gang.tokens[2][-1] == EOS
+
+
+@pytest.mark.parametrize("all_done_every", [0, 4])
+def test_row_windows_with_loop_levers_match_stock_loop(monkeypatch,
+                                                       all_done_every):
+    """continue_decode(fixed_trip_count=True, row_decode_steps=w) with the
+    dead-row clamp (and the all-done exit) on gives each row what the stock
+    loop with the same levers gives it for max_decode_steps=w[r], on the
+    RPA-like model: a row masked after its window keeps its KV."""
+    _set_levers(monkeypatch,
+                dead_kv=True,
+                all_done_every=all_done_every,
+                skip_mixed=True)
+    batch_size, width, static_steps = 4, 64, 9
+    reqs = [(0, 20), (2, 40), (3, 30)]
+    eos_pos = [-1, -1, 42, -1]  # row 2 emits EOS on its 4th step
+    windows = {0: 2, 2: 9, 3: 5}
+    row_steps = np.full(batch_size, static_steps, np.int32)
+    for row, window in windows.items():
+        row_steps[row] = window
+    model_fn, compute_logits_fn, sample_fn = _rpa_like_model(
+        batch_size, 1, eos_pos)
+
+    def run(max_decode_steps, fixed, row_decode_steps=None):
+        kv, init_state = gsd._loop_inputs(batch_size, width, reqs)
+        return continue_decode(
+            state={},
+            model_fn=model_fn,
+            compute_logits_fn=compute_logits_fn,
+            sample_fn=sample_fn,
+            init_state=init_state,
+            kv_caches=kv,
+            max_decode_steps=jnp.array(max_decode_steps, jnp.int32),
+            static_max_decode_steps=static_steps,
+            eos_token_id=(EOS, ),
+            padding_token_id=PAD,
+            rng=jax.random.PRNGKey(0),
+            mesh=None,
+            sampling_metadata=None,
+            continue_decode_eos_check_interval=-1,
+            fixed_trip_count=fixed,
+            row_decode_steps=row_decode_steps,
+        )
+
+    tokens_g, kv_g, state_g, _, _, _ = run(static_steps, True,
+                                           jnp.asarray(row_steps))
+    tokens_g = np.asarray(tokens_g)
+    # Rows 0 and 3 never end, so the all-done exit never fires.
+    assert int(kv_g[2]) == static_steps
+    for row, window in windows.items():
+        tokens_s, kv_s, state_s, _, _, _ = run(window, False)
+        np.testing.assert_array_equal(tokens_g[:window, row],
+                                      np.asarray(tokens_s)[:window, row])
+        assert (tokens_g[window:, row] == PAD).all()
+        for name in ("current_tokens", "active_mask"):
+            assert (np.asarray(getattr(state_g, name))[row] == np.asarray(
+                getattr(state_s, name))[row])
+        for name in ("input_positions", "seq_lens"):
+            assert (np.asarray(getattr(state_g.attn_metadata,
+                                       name))[row] == np.asarray(
+                                           getattr(state_s.attn_metadata,
+                                                   name))[row])
+        np.testing.assert_array_equal(
+            np.asarray(kv_g[0])[row],
+            np.asarray(kv_s[0])[row])
+        assert int(kv_g[1][row]) == int(kv_s[1][row])
+    # Rows 0 and 3 stopped at their windows with their prompt KV intact.
+    assert int(np.asarray(kv_g[0])[0, 0]) == 2
+    assert int(np.asarray(kv_g[0])[3, 0]) == 2
 
 
 @pytest.mark.parametrize(
